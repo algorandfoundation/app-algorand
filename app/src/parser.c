@@ -43,7 +43,7 @@ parser_error_t parser_parse(parser_context_t *ctx,
 parser_error_t parser_validate(parser_context_t *ctx) {
     // Iterate through all items to check that all can be shown and are valid
     uint8_t numItems = 0;
-    CHECK_ERROR(parser_getNumItems(ctx, &numItems))
+    CHECK_ERROR(parser_getNumItems(&numItems))
 
     char tmpKey[40];
     char tmpVal[40];
@@ -55,7 +55,7 @@ parser_error_t parser_validate(parser_context_t *ctx) {
     return parser_ok;
 }
 
-parser_error_t parser_getNumItems(const parser_context_t *ctx, uint8_t *num_items) {
+parser_error_t parser_getNumItems(uint8_t *num_items) {
     *num_items = _getNumItems();
     if(*num_items == 0) {
         return parser_unexpected_number_items;
@@ -63,7 +63,7 @@ parser_error_t parser_getNumItems(const parser_context_t *ctx, uint8_t *num_item
     return parser_ok;
 }
 
-parser_error_t parser_getCommonNumItems(const parser_context_t *ctx, uint8_t *common_num_items) {
+static parser_error_t parser_getCommonNumItems(uint8_t *common_num_items) {
     *common_num_items = _getCommonNumItems();
     if(*common_num_items == 0) {
         return parser_unexpected_number_items;
@@ -71,7 +71,7 @@ parser_error_t parser_getCommonNumItems(const parser_context_t *ctx, uint8_t *co
     return parser_ok;
 }
 
-parser_error_t parser_getTxNumItems(const parser_context_t *ctx, uint8_t *tx_num_items) {
+static parser_error_t parser_getTxNumItems(uint8_t *tx_num_items) {
     *tx_num_items = _getTxNumItems();
     return parser_ok;
 }
@@ -563,6 +563,8 @@ static parser_error_t parser_printTxApplication(parser_context_t *ctx,
 
         case IDX_BOXES: {
             const uint8_t tmpIdx = displayIdx -  IDX_BOXES;
+            // Check max index
+            if (tmpIdx >= MAX_FOREIGN_APPS) return parser_unexpected_value;
             if (tmpIdx == 0){
                 snprintf(outKey, outKeyLen, "Box");
             }
@@ -576,6 +578,8 @@ static parser_error_t parser_printTxApplication(parser_context_t *ctx,
 
         case IDX_FOREIGN_APP: {
             const uint8_t tmpIdx = (displayIdx - (application->num_boxes)) - IDX_BOXES;
+            // Check max index
+            if (tmpIdx >= MAX_FOREIGN_APPS) return parser_unexpected_value;
             snprintf(outKey, outKeyLen, "Foreign app %d", tmpIdx);
             if (uint64_to_str(outVal, outValLen, application->foreign_apps[tmpIdx]) != NULL) {
                 return parser_unexpected_error;
@@ -584,7 +588,9 @@ static parser_error_t parser_printTxApplication(parser_context_t *ctx,
         }
 
         case IDX_FOREIGN_ASSET: {
-            const uint8_t tmpIdx = (displayIdx - application->num_foreign_apps- application->num_boxes) - IDX_BOXES;
+            const uint8_t tmpIdx = (displayIdx - application->num_foreign_apps - application->num_boxes) - IDX_BOXES;
+            // Check max index
+            if (tmpIdx >= MAX_FOREIGN_ASSETS) return parser_unexpected_value;
             snprintf(outKey, outKeyLen, "Foreign asset %d", tmpIdx);
             if (uint64_to_str(outVal, outValLen, application->foreign_assets[tmpIdx]) != NULL) {
                 return parser_unexpected_error;
@@ -606,6 +612,8 @@ static parser_error_t parser_printTxApplication(parser_context_t *ctx,
 
         case IDX_APP_ARGS: {
             const uint8_t tmpIdx = (displayIdx - application->num_foreign_apps - application->num_foreign_assets - application->num_accounts - application->num_boxes) - IDX_BOXES;
+            // Check max index
+            if (tmpIdx >= MAX_ARG) return parser_unexpected_value;
             snprintf(outKey, outKeyLen, "App arg %d", tmpIdx);
             uint8_t* app_args_ptr = NULL;
             CHECK_ERROR(_getAppArg(ctx, &app_args_ptr, &application->app_args_len[tmpIdx], tmpIdx, MAX_ARGLEN, MAX_ARG))
@@ -652,18 +660,22 @@ parser_error_t parser_getItem(parser_context_t *ctx,
                               char *outKey, uint16_t outKeyLen,
                               char *outVal, uint16_t outValLen,
                               uint8_t pageIdx, uint8_t *pageCount) {
+    if (ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
+        return parser_unexpected_value;
+    }
+
     cleanOutput(outKey, outKeyLen, outVal, outValLen);
     *pageCount = 0;
 
     uint8_t numItems = 0;
-    CHECK_ERROR(parser_getNumItems(ctx, &numItems))
+    CHECK_ERROR(parser_getNumItems(&numItems))
     CHECK_APP_CANARY()
 
     uint8_t commonItems = 0;
-    CHECK_ERROR(parser_getCommonNumItems(ctx, &commonItems))
+    CHECK_ERROR(parser_getCommonNumItems(&commonItems))
 
     uint8_t txItems = 0;
-    CHECK_ERROR(parser_getTxNumItems(ctx, &txItems))
+    CHECK_ERROR(parser_getTxNumItems(&txItems))
 
     CHECK_ERROR(checkSanity(numItems, displayIdx))
 
@@ -720,4 +732,36 @@ parser_error_t parser_getItem(parser_context_t *ctx,
     }
 
     return parser_display_idx_out_of_range;
+}
+
+parser_error_t parser_getTxnText(parser_context_t *ctx,
+                                 char *outVal, uint16_t outValLen) {
+    if (ctx == NULL || outVal == NULL) {
+        return parser_unexpected_error;
+    }
+
+    switch (ctx->parser_tx_obj->type) {
+        case TX_PAYMENT:
+            snprintf(outVal, outValLen, "Review payment");
+            break;
+        case TX_KEYREG:
+            snprintf(outVal, outValLen, "Review account\nregistration");
+            break;
+        case TX_ASSET_XFER:
+            snprintf(outVal, outValLen, "Review ASA transfer");
+            break;
+        case TX_ASSET_FREEZE:
+            snprintf(outVal, outValLen, "Review asset freeze");
+            break;
+        case TX_ASSET_CONFIG:
+            snprintf(outVal, outValLen, "Review asset\nconfiguration");
+            break;
+        case TX_APPLICATION:
+            snprintf(outVal, outValLen, "Review application\ncall");
+            break;
+        default:
+            return parser_unknown_transaction;
+    }
+
+    return parser_ok;
 }
