@@ -14,12 +14,26 @@
 *  limitations under the License.
 ********************************************************************************/
 
+#include "common/parser.h"
 #include "parser_impl.h"
+#include "parser_json.h"
 #include "msgpack.h"
+#include "app_mode.h"
+#include "coin.h"
+#include "picohash.h"
+#include "apdu_codes.h"
+#include "zxformat.h"
+#include "zxerror.h"
+#include "jsmn.h"
+
+#if defined(LEDGER_SPECIFIC)
+#include "crypto.h"
+#endif
 
 static uint8_t num_items;
 static uint8_t common_num_items;
 static uint8_t tx_num_items;
+static uint8_t num_json_items;
 
 #define MAX_PARAM_SIZE 12
 #define MAX_ITEM_ARRAY 50
@@ -34,15 +48,55 @@ DEC_READFIX_UNSIGNED(64);
 static parser_error_t addItem(uint8_t displayIdx);
 static parser_error_t _findKey(parser_context_t *c, const char *key);
 
+static parser_error_t _readSigner(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readScope(parser_context_t *c);
+static parser_error_t _readEncoding(parser_context_t *c);
+static parser_error_t _readData(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readDomain(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readAuthData(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readRequestId(parser_context_t *c, parser_arbitrary_data_t *v);
+
+// Arbitrary Sign
+#define APDU_CODE_INVALID_SCOPE 0x6988
+#define APDU_CODE_FAILED_DECODING 0x6989
+#define APDU_CODE_INVALID_SIGNER 0x698A
+#define APDU_CODE_MISSING_DOMAIN 0x698B
+#define APDU_CODE_MISSING_AUTHENTICATED_DATA 0x698C
+#define APDU_CODE_BAD_JSON 0x698D
+#define APDU_CODE_FAILED_DOMAIN_AUTH 0x698E
+#define APDU_CODE_FAILED_HD_PATH 0x698F
+
+
+#define SCOPE_AUTH 0x01
+#define ENCODING_BASE64 0x01
+
 #define DISPLAY_ITEM(type, len, counter)        \
     for(uint8_t j = 0; j < len; j++) {          \
         CHECK_ERROR(addItem(type))              \
         counter++;                              \
     }
 
-parser_error_t parser_init_context(parser_context_t *ctx,
+#define DISPLAY_APP_ITEM(appIdx, len, counter, v)   \
+    if (!app_mode_blindsign()) {                    \
+        for(uint8_t j = 0; j < len; j++) {          \
+            CHECK_ERROR(addItem(appIdx))            \
+            counter++;                              \
+        }                                           \
+    }
+
+#define DISPLAY_COMMON_ITEM(appIdx, len, counter, v)                                \
+    if (v->type == TX_APPLICATION && app_mode_blindsign()) {                       \
+        if (appIdx == IDX_COMMON_SENDER || appIdx == IDX_COMMON_REKEY_TO) {         \
+            DISPLAY_ITEM(appIdx, len, counter)                                      \
+        }                                                                           \
+    } else {                                                                        \
+        DISPLAY_ITEM(appIdx, len, counter)                                          \
+    }
+
+static parser_error_t parser_init_context(parser_context_t *ctx,
                                    const uint8_t *buffer,
-                                   uint16_t bufferSize) {
+                                   uint16_t bufferSize,
+                                   txn_content_e content) {
     if (ctx == NULL || bufferSize == 0 || buffer == NULL) {
          return parser_init_context_empty;
     }
@@ -56,11 +110,12 @@ parser_error_t parser_init_context(parser_context_t *ctx,
 
     ctx->buffer = buffer;
     ctx->bufferLen = bufferSize;
+    ctx->content = content;
     return parser_ok;
 }
 
-parser_error_t parser_init(parser_context_t *ctx, const uint8_t *buffer, uint16_t bufferSize) {
-    CHECK_ERROR(parser_init_context(ctx, buffer, bufferSize))
+parser_error_t parser_init(parser_context_t *ctx, const uint8_t *buffer, uint16_t bufferSize, txn_content_e content) {
+    CHECK_ERROR(parser_init_context(ctx, buffer, bufferSize, content))
     return parser_ok;
 }
 
@@ -773,36 +828,36 @@ static parser_error_t _readTxCommonParams(parser_context_t *c, parser_tx_t *v)
 
     CHECK_ERROR(_findKey(c, KEY_COMMON_SENDER))
     CHECK_ERROR(_readBinFixed(c, v->sender, sizeof(v->sender)))
-    DISPLAY_ITEM(IDX_COMMON_SENDER, 1, common_num_items)
+    DISPLAY_COMMON_ITEM(IDX_COMMON_SENDER, 1, common_num_items, v)
 
     if (_findKey(c, KEY_COMMON_LEASE) == parser_ok) {
         CHECK_ERROR(_readBinFixed(c, v->lease, sizeof(v->lease)))
-        DISPLAY_ITEM(IDX_COMMON_LEASE, 1, common_num_items)
+        DISPLAY_COMMON_ITEM(IDX_COMMON_LEASE, 1, common_num_items, v)
     }
 
     if (_findKey(c, KEY_COMMON_REKEY) == parser_ok) {
         CHECK_ERROR(_readBinFixed(c, v->rekey, sizeof(v->rekey)))
-        DISPLAY_ITEM(IDX_COMMON_REKEY_TO, 1, common_num_items)
+        DISPLAY_COMMON_ITEM(IDX_COMMON_REKEY_TO, 1, common_num_items, v)
     }
 
     v->fee = 0;
     if (_findKey(c, KEY_COMMON_FEE) == parser_ok) {
         CHECK_ERROR(_readInteger(c, &v->fee))
     }
-    DISPLAY_ITEM(IDX_COMMON_FEE, 1, common_num_items)
+    DISPLAY_COMMON_ITEM(IDX_COMMON_FEE, 1, common_num_items, v)
 
     if (_findKey(c, KEY_COMMON_GEN_ID) == parser_ok) {
         CHECK_ERROR(_readString(c, (uint8_t*)v->genesisID, sizeof(v->genesisID)))
-        DISPLAY_ITEM(IDX_COMMON_GEN_ID, 1, common_num_items)
+        DISPLAY_COMMON_ITEM(IDX_COMMON_GEN_ID, 1, common_num_items, v)
     }
 
     CHECK_ERROR(_findKey(c, KEY_COMMON_GEN_HASH))
     CHECK_ERROR(_readBinFixed(c, v->genesisHash, sizeof(v->genesisHash)))
-    DISPLAY_ITEM(IDX_COMMON_GEN_HASH, 1, common_num_items)
+    DISPLAY_COMMON_ITEM(IDX_COMMON_GEN_HASH, 1, common_num_items, v)
 
     if (_findKey(c, KEY_COMMON_GROUP_ID) == parser_ok) {
         CHECK_ERROR(_readBinFixed(c, v->groupID, sizeof(v->groupID)))
-        DISPLAY_ITEM(IDX_COMMON_GROUP_ID, 1, common_num_items)
+        DISPLAY_COMMON_ITEM(IDX_COMMON_GROUP_ID, 1, common_num_items, v)
     }
 
     if (_findKey(c, KEY_COMMON_NOTE) == parser_ok) {
@@ -810,7 +865,7 @@ static parser_error_t _readTxCommonParams(parser_context_t *c, parser_tx_t *v)
         if(v->note_len > MAX_NOTE_LEN) {
             return parser_unexpected_value;
         }
-        DISPLAY_ITEM(IDX_COMMON_NOTE, 1, common_num_items)
+        DISPLAY_COMMON_ITEM(IDX_COMMON_NOTE, 1, common_num_items, v)
     }
 
     // First and Last valid won't be display --> don't count them
@@ -1049,31 +1104,31 @@ static parser_error_t _readTxApplication(parser_context_t *c, parser_tx_t *v)
     if (_findKey(c, KEY_APP_ID) == parser_ok) {
         CHECK_ERROR(_readInteger(c, &application->id))
     }
-    DISPLAY_ITEM(IDX_APP_ID, 1, tx_num_items)
+    DISPLAY_APP_ITEM(IDX_APP_ID, 1, tx_num_items, v)
 
     if (_findKey(c, KEY_APP_ONCOMPLETION) == parser_ok) {
         CHECK_ERROR(_readInteger(c, &application->oncompletion))
     }
-    DISPLAY_ITEM(IDX_ON_COMPLETION, 1, tx_num_items)
+    DISPLAY_APP_ITEM(IDX_ON_COMPLETION, 1, tx_num_items, v)
 
     if (_findKey(c, KEY_APP_BOXES) == parser_ok) {
         CHECK_ERROR(_readBoxes(c, application->boxes, &application->num_boxes))
-        DISPLAY_ITEM(IDX_BOXES, application->num_boxes, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_BOXES, application->num_boxes, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_FOREIGN_APPS) == parser_ok) {
         CHECK_ERROR(_readArrayU64(c, application->foreign_apps, &application->num_foreign_apps, MAX_FOREIGN_APPS))
-        DISPLAY_ITEM(IDX_FOREIGN_APP, application->num_foreign_apps, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_FOREIGN_APP, application->num_foreign_apps, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_FOREIGN_ASSETS) == parser_ok) {
         CHECK_ERROR(_readArrayU64(c, application->foreign_assets, &application->num_foreign_assets, MAX_FOREIGN_ASSETS))
-        DISPLAY_ITEM(IDX_FOREIGN_ASSET, application->num_foreign_assets, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_FOREIGN_ASSET, application->num_foreign_assets, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_ACCOUNTS) == parser_ok) {
         CHECK_ERROR(_verifyAccounts(c, &application->num_accounts, MAX_ACCT))
-        DISPLAY_ITEM(IDX_ACCOUNTS, application->num_accounts, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_ACCOUNTS, application->num_accounts, tx_num_items, v)
     }
 
     if(application->num_accounts + application->num_foreign_apps + application->num_foreign_assets > ACCT_FOREIGN_LIMIT) {
@@ -1082,7 +1137,7 @@ static parser_error_t _readTxApplication(parser_context_t *c, parser_tx_t *v)
 
     if (_findKey(c, KEY_APP_ARGS) == parser_ok) {
         CHECK_ERROR(_verifyAppArgs(c, application->app_args_len, &application->num_app_args, MAX_ARG))
-        DISPLAY_ITEM(IDX_APP_ARGS, application->num_app_args, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_APP_ARGS, application->num_app_args, tx_num_items, v)
     }
 
     uint16_t app_args_total_len = 0;
@@ -1095,12 +1150,12 @@ static parser_error_t _readTxApplication(parser_context_t *c, parser_tx_t *v)
 
     if (_findKey(c, KEY_APP_GLOBAL_SCHEMA) == parser_ok) {
         CHECK_ERROR(_readStateSchema(c, &application->global_schema))
-        DISPLAY_ITEM(IDX_GLOBAL_SCHEMA, 1, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_GLOBAL_SCHEMA, 1, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_LOCAL_SCHEMA) == parser_ok) {
         CHECK_ERROR(_readStateSchema(c, &application->local_schema))
-        DISPLAY_ITEM(IDX_LOCAL_SCHEMA, 1, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_LOCAL_SCHEMA, 1, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_EXTRA_PAGES) == parser_ok) {
@@ -1108,17 +1163,17 @@ static parser_error_t _readTxApplication(parser_context_t *c, parser_tx_t *v)
         if (application->extra_pages > 3){
             return parser_too_many_extra_pages;
         }
-        DISPLAY_ITEM(IDX_EXTRA_PAGES, 1, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_EXTRA_PAGES, 1, tx_num_items, v)
     }
 
     if (_findKey(c, KEY_APP_APROG_LEN) == parser_ok) {
         CHECK_ERROR(_getPointerBin(c, &application->aprog, &application->aprog_len))
-        DISPLAY_ITEM(IDX_APPROVE, 1, tx_num_items)
+        DISPLAY_APP_ITEM(IDX_APPROVE, 1, tx_num_items, v)
     }
 
    if (_findKey(c, KEY_APP_CPROG_LEN) == parser_ok) {
        CHECK_ERROR(_getPointerBin(c, &application->cprog, &application->cprog_len))
-       DISPLAY_ITEM(IDX_CLEAR, 1, tx_num_items)
+       DISPLAY_APP_ITEM(IDX_CLEAR, 1, tx_num_items, v)
    }
 
     if (application->id == 0 && application->cprog_len + application->aprog_len > PAGE_LEN *(1+application->extra_pages)){
@@ -1163,7 +1218,14 @@ parser_error_t _read(parser_context_t *c, parser_tx_t *v)
         CHECK_ERROR(_readTxAssetConfig(c, v))
         break;
     case TX_APPLICATION:
+        #if defined(LEDGER_SPECIFIC)
         CHECK_ERROR(_readTxApplication(c, v))
+        if (!app_mode_blindsign()) {
+            app_mode_skip_blindsign_ui();
+        }
+        #else
+        CHECK_ERROR(_readTxApplication(c, v))
+        #endif
         break;
     default:
         return parser_unknown_transaction;
@@ -1171,6 +1233,193 @@ parser_error_t _read(parser_context_t *c, parser_tx_t *v)
     }
 
     num_items = common_num_items + tx_num_items + 1;
+    return parser_ok;
+}
+
+#if !defined(TARGET_NANOS) && !defined(TARGET_NANOS2) && !defined(TARGET_NANOX) && !defined(TARGET_STAX) && !defined(TARGET_FLEX)
+#include "crypto.h"
+static parser_error_t _readSerializedHdPath(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t serializedPathLen = sizeof(uint32_t) * HDPATH_LEN_DEFAULT;
+    memcpy(hdPath, c->buffer, serializedPathLen);
+
+    const bool mainnet = hdPath[0] == HDPATH_0_DEFAULT && hdPath[1] == HDPATH_1_DEFAULT;
+
+    if (!mainnet) {
+        return parser_failed_hd_path;
+    }
+    CTX_CHECK_AND_ADVANCE(c, serializedPathLen)
+    return parser_ok;
+}
+#endif
+
+parser_error_t _read_arbitrary_data(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    #if !defined(TARGET_NANOS) && !defined(TARGET_NANOS2) && !defined(TARGET_NANOX) && !defined(TARGET_STAX) && !defined(TARGET_FLEX)
+    // For cpp_test, the path needs to be read here
+    CHECK_ERROR(_readSerializedHdPath(c, v))
+    #endif
+    num_items++; // hdPath, read on process_chunk
+    CHECK_ERROR(_readSigner(c, v))
+    CHECK_ERROR(_readScope(c))
+    CHECK_ERROR(_readEncoding(c))
+    CHECK_ERROR(_readData(c, v))
+    CHECK_ERROR(_readDomain(c, v))
+    CHECK_ERROR(_readRequestId(c, v))
+    CHECK_ERROR(_readAuthData(c, v))
+    return parser_ok;
+}
+
+static parser_error_t _readSigner(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    v->signerBuffer = c->buffer + c->offset;
+
+    
+    uint8_t raw_pubkey[PK_LEN_25519];
+    #if defined(LEDGER_SPECIFIC)
+    zxerr_t err = crypto_extractPublicKey(raw_pubkey, PK_LEN_25519);
+    if (err != zxerr_ok) {
+        return parser_invalid_signer;
+    }
+    #else
+    // in cpp_test we cannot compute the pubkey from the hdPath
+    const char *pubkeyAcc0 = "1eccfd1ec05e4125fae690cec2a77839a9a36235dd6e2eafba79ca25c0da60f8";
+    const char *pubkeyAcc123 = "0dfdbcdb8eebed628cfb4ef70207b86fd0deddca78e90e8c59d6f441e383b377";
+
+    if (hdPath[2] == (HDPATH_2_DEFAULT | 0x00000000)) {
+        hexstr_to_array(raw_pubkey, PK_LEN_25519, pubkeyAcc0, strlen(pubkeyAcc0));
+    } else {
+        hexstr_to_array(raw_pubkey, PK_LEN_25519, pubkeyAcc123, strlen(pubkeyAcc123));
+    }
+    #endif
+
+    if (memcmp(raw_pubkey, v->signerBuffer, PK_LEN_25519) != 0) {
+        return parser_invalid_signer;
+    }
+
+    CTX_CHECK_AND_ADVANCE(c, PK_LEN_25519)
+
+    num_items++;
+
+    return parser_ok;
+}
+
+static parser_error_t _readScope(parser_context_t *c)
+{
+    uint8_t scope = 0;
+    CHECK_ERROR(_readUInt8(c, &scope))
+    
+    if (scope != SCOPE_AUTH) {
+        return parser_invalid_scope;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readEncoding(parser_context_t *c)
+{
+    uint8_t encoding = 0;
+    CHECK_ERROR(_readUInt8(c, &encoding))
+    
+    if (encoding != ENCODING_BASE64) {
+        return parser_invalid_encoding;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readData(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t dataLen = 0;
+    CHECK_ERROR(_readUInt32(c, &dataLen))
+    v->dataLen = dataLen;
+    v->dataBuffer = c->buffer + c->offset;
+
+    CHECK_ERROR(parser_json_parse((const char*)c->buffer + c->offset, dataLen, c, &num_json_items))
+    num_items += num_json_items;
+
+    CHECK_ERROR(parser_json_check_canonical((const char*)v->dataBuffer, v->dataLen))
+
+    return parser_ok;
+}
+
+static parser_error_t _readDomain(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t domainLen = 0;
+    CHECK_ERROR(_readUInt32(c, &domainLen))
+    v->domainLen = domainLen;
+
+    if (domainLen == 0) {
+        return parser_missing_domain;
+    }
+
+    v->domainBuffer = c->buffer + c->offset;
+
+    for (uint32_t i = 0; i < domainLen; i++) {
+        // Check for representable ASCII (32-126)
+        if (v->domainBuffer[i] < 32 || v->domainBuffer[i] > 126) {
+            return parser_invalid_domain;
+        }
+    }
+
+    CTX_CHECK_AND_ADVANCE(c, domainLen)
+
+    num_items++;
+
+    return parser_ok;
+}
+
+static parser_error_t _readRequestId(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t requestIdLen = 0;
+    CHECK_ERROR(_readUInt32(c, &requestIdLen))
+
+    v->requestIdLen = requestIdLen;
+
+    // RequestId is optional
+    if (requestIdLen != 0) {
+        v->requestIdBuffer = c->buffer + c->offset;
+        // Check it's an uppercase hex string
+        for (uint32_t i = 0; i < requestIdLen; i++) {
+            if ((v->requestIdBuffer[i] < '0' || v->requestIdBuffer[i] > '9') &&
+                (v->requestIdBuffer[i] < 'A' || v->requestIdBuffer[i] > 'F')) {
+                return parser_invalid_request_id;
+            }
+        }
+        CTX_CHECK_AND_ADVANCE(c, requestIdLen)
+        num_items++;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readAuthData(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t authDataLen = 0;
+    CHECK_ERROR(_readUInt32(c, &authDataLen))
+    v->authDataLen = authDataLen;
+
+    if (authDataLen == 0) {
+        return parser_missing_authenticated_data;
+    }
+
+    v->authDataBuffer = c->buffer + c->offset;
+
+    CTX_CHECK_AND_ADVANCE(c, authDataLen)
+
+    // authData first 32 bytes should be the sha256 of the domain
+    uint8_t domainHash[PICOHASH_SHA256_DIGEST_LENGTH];
+    picohash_ctx_t ctx;
+    picohash_init_sha256(&ctx);
+    picohash_update(&ctx, v->domainBuffer, v->domainLen);
+    picohash_final(&ctx, domainHash);
+
+    if (memcmp(domainHash, v->authDataBuffer, PICOHASH_SHA256_DIGEST_LENGTH) != 0) {
+        return parser_failed_domain_auth;
+    }
+
+    num_items++;
+
     return parser_ok;
 }
 
@@ -1187,6 +1436,34 @@ uint8_t _getCommonNumItems()
 uint8_t _getTxNumItems()
 {
     return tx_num_items;
+}
+
+uint8_t _getNumJsonItems()
+{
+    return num_json_items;
+}
+
+uint16_t parser_mapParserErrorToSW(parser_error_t err) {
+    switch (err) {
+        case parser_invalid_scope:
+            return APDU_CODE_INVALID_SCOPE;
+        case parser_failed_decoding:
+            return APDU_CODE_FAILED_DECODING;
+        case parser_invalid_signer:
+            return APDU_CODE_INVALID_SIGNER;
+        case parser_missing_domain:
+            return APDU_CODE_MISSING_DOMAIN;
+        case parser_missing_authenticated_data:
+            return APDU_CODE_MISSING_AUTHENTICATED_DATA;
+        case parser_bad_json:
+            return APDU_CODE_BAD_JSON;
+        case parser_failed_domain_auth:
+            return APDU_CODE_FAILED_DOMAIN_AUTH;
+        case parser_failed_hd_path:
+            return APDU_CODE_FAILED_HD_PATH;
+        default:
+            return APDU_CODE_DATA_INVALID;
+    }
 }
 
 const char *parser_getErrorDescription(parser_error_t err) {
@@ -1222,6 +1499,8 @@ const char *parser_getErrorDescription(parser_error_t err) {
             return "display page out of range";
         case parser_unexpected_error:
             return "Unexpected error in parser";
+        case parser_blindsign_mode_required:
+            return "Blind signing mode required";
         case parser_unexpected_type:
             return "Unexpected type";
         case parser_unexpected_method:
@@ -1272,6 +1551,26 @@ const char *parser_getErrorDescription(parser_error_t err) {
             return "msgpack_array_too_big";
         case parser_msgpack_array_type_expected:
             return "Msgpack array type expected";
+        case parser_invalid_scope:
+            return "Invalid Scope";
+        case parser_failed_decoding:
+            return "Failed decoding";
+        case parser_invalid_signer:
+            return "Invalid Signer";
+        case parser_missing_domain:
+            return "Missing Domain";
+        case parser_invalid_domain:
+            return "Invalid Domain";
+        case parser_missing_authenticated_data:
+            return "Missing Authentication Data";
+        case parser_bad_json:
+            return "Bad JSON";
+        case parser_failed_domain_auth:
+            return "Failed Domain Auth";
+        case parser_failed_hd_path:
+            return "Failed HD Path";
+        case parser_invalid_request_id:
+            return "Invalid Request ID";
         default:
             return "Unrecognized error code";
     }
@@ -1313,4 +1612,30 @@ const char *parser_getMsgPackTypeDescription(uint8_t type) {
         default:
             return "Unrecognized type";
     }
+}
+
+parser_error_t parser_jsonGetNthKey(parser_context_t *ctx, uint8_t displayIdx, char *outKey, uint16_t outKeyLen) {
+    uint16_t token_index = 0;
+    CHECK_ERROR(parser_json_object_get_nth_key(0, displayIdx, &token_index));
+    CHECK_ERROR(parser_getJsonItemFromTokenIndex((const char*)ctx->parser_arbitrary_data_obj->dataBuffer, token_index, outKey, outKeyLen));
+    return parser_ok;
+}
+
+parser_error_t parser_jsonGetNthValue(parser_context_t *ctx, uint8_t displayIdx, char *outVal, uint16_t outValLen) {
+    uint16_t token_index = 0;
+    CHECK_ERROR(parser_json_object_get_nth_value(0, displayIdx, &token_index));
+    CHECK_ERROR(parser_getJsonItemFromTokenIndex((const char*)ctx->parser_arbitrary_data_obj->dataBuffer, token_index, outVal, outValLen));
+
+    // Remove backslashes
+    uint16_t removedBackslashes = 0;
+    for (uint16_t i = 0; i < outValLen; i++) {
+        if (outVal[i] == '\\') {
+            memmove(&outVal[i], &outVal[i + 1], outValLen - i - 1);
+            removedBackslashes++;
+        }
+        outValLen -= removedBackslashes;
+        outVal[outValLen] = '\0';
+    }
+
+    return parser_ok;
 }

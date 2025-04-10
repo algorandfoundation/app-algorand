@@ -1,6 +1,6 @@
 #*******************************************************************************
 #  Ledger App
-#  (c) 2018 - 2022 Zondax AG
+#  (c) 2018 - 2025 Zondax AG
 #  (c) 2017 Ledger
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,7 +34,7 @@ DEFINES += PRODUCTION_BUILD=$(PRODUCTION_BUILD)
 
 include $(CURDIR)/../deps/ledger-zxlib/makefiles/Makefile.app_testing
 
-DEFINES += REVIEW_SCREEN_ENABLED SHORTCUT_MODE_ENABLED
+DEFINES += APP_BLINDSIGN_MODE_ENABLED
 
 ifndef COIN
 COIN=ALGO
@@ -79,6 +79,9 @@ SDK_SOURCE_PATH += lib_u2f
 
 LDFLAGS  += -z muldefs
 APP_SOURCE_PATH += $(MY_DIR)/../deps/sha512
+APP_SOURCE_PATH += $(MY_DIR)/../deps/picohash
+APP_SOURCE_PATH += $(MY_DIR)/../app/src/json
+APP_SOURCE_PATH += $(MY_DIR)/../app/src/json/jsmn
 
 include $(CURDIR)/../deps/ledger-zxlib/makefiles/Makefile.platform
 

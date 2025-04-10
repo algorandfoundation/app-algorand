@@ -18,7 +18,8 @@
 #include "os.h"
 #include "coin.h"
 #include "zxerror.h"
-
+#include "parser_txdef.h"
+#include "parser_common.h"
 void tx_initialize();
 
 /// Clears the transaction buffer
@@ -42,7 +43,7 @@ uint8_t *tx_get_buffer();
 /// Parse message stored in transaction buffer
 /// This function should be called as soon as full buffer data is loaded.
 /// \return It returns NULL if data is valid or error message otherwise.
-const char *tx_parse();
+parser_error_t tx_parse(txn_content_e content);
 
 /// Return the number of items in the transaction
 zxerr_t tx_getNumItems(uint8_t *num_items);

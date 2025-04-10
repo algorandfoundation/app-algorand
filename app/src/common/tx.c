@@ -17,7 +17,7 @@
 #include "tx.h"
 #include "apdu_codes.h"
 #include "buffering.h"
-#include "parser.h"
+#include "common/parser.h"
 #include <string.h>
 #include "zxmacros.h"
 
@@ -44,6 +44,7 @@ storage_t NV_CONST N_appdata_impl __attribute__((aligned(64)));
 #endif
 
 static parser_tx_t parser_tx_obj;
+static parser_arbitrary_data_t parser_arbitrary_data_obj;
 static parser_context_t ctx_parsed_tx;
 
 void tx_initialize()
@@ -75,19 +76,34 @@ uint8_t *tx_get_buffer()
     return buffering_get_buffer()->data;
 }
 
-const char *tx_parse()
+parser_error_t tx_parse(txn_content_e content)
 {
     MEMZERO(&parser_tx_obj, sizeof(parser_tx_obj));
+    MEMZERO(&parser_arbitrary_data_obj, sizeof(parser_arbitrary_data_obj));
 
-    uint8_t err = parser_parse(&ctx_parsed_tx,
-                               tx_get_buffer()+2,   // 'TX' is prepended to input buffer
-                               tx_get_buffer_length(),
-                               &parser_tx_obj);
+    uint8_t err = parser_unexpected_error;
+    void *parser_obj = NULL;
+    uint8_t offset = 0;
+
+    if (content == MsgPack) {
+        parser_obj = (void *) &parser_tx_obj;
+        offset = 2;   // 'TX' is prepended to input buffer
+    } else if (content == ArbitraryData) {
+        parser_obj = (void *) &parser_arbitrary_data_obj;
+    } else {
+        return parser_unexpected_error;
+    }
+
+    err = parser_parse(&ctx_parsed_tx,
+                                   tx_get_buffer()+offset,
+                                   tx_get_buffer_length(),
+                                   parser_obj,
+                                   content);
     CHECK_APP_CANARY()
 
     if (err != parser_ok)
     {
-        return parser_getErrorDescription(err);
+        return err;
     }
 
     err = parser_validate(&ctx_parsed_tx);
@@ -95,10 +111,10 @@ const char *tx_parse()
 
     if (err != parser_ok)
     {
-        return parser_getErrorDescription(err);
+        return err;
     }
 
-    return NULL;
+    return parser_ok;
 }
 
 void tx_parse_reset()
