@@ -1,6 +1,6 @@
 #*******************************************************************************
 #  Ledger App
-#  (c) 2018 - 2022 Zondax AG
+#  (c) 2018 - 2025 Zondax AG
 #  (c) 2017 Ledger
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
@@ -44,6 +44,15 @@ VARIANT_PARAM=COIN
 VARIANT_VALUES=$(COIN)
 
 include $(CURDIR)/Makefile.version
+APPVERSION = "$(APPVERSION_M).$(APPVERSION_N).$(APPVERSION_P)"
+
+# Application icons following guidelines:
+# https://developers.ledger.com/docs/embedded-app/design-requirements/#device-icon
+ICON_NANOS = nanos_icon.gif
+ICON_NANOX = nanox_icon.gif
+ICON_NANOSP = nanox_icon.gif
+ICON_STAX = stax_icon.gif
+ICON_FLEX = flex_icon.gif
 
 $(info COIN  = [$(COIN)])
 
@@ -78,7 +87,11 @@ DEFINES += HAVE_U2F HAVE_IO_U2F U2F_PROXY_MAGIC=\"algo\" USB_SEGMENT_SIZE=64 BLE
 SDK_SOURCE_PATH += lib_u2f
 
 LDFLAGS  += -z muldefs
+CFLAGS += -I$(MY_DIR)/../deps/tinycbor/src
+APP_SOURCE_PATH += $(MY_DIR)/../deps/tinycbor-ledger
+APP_SOURCE_PATH += $(MY_DIR)/../app/src/
 APP_SOURCE_PATH += $(MY_DIR)/../deps/sha512
+APP_SOURCE_PATH += $(MY_DIR)/../deps/picohash
 
 include $(CURDIR)/../deps/ledger-zxlib/makefiles/Makefile.platform
 

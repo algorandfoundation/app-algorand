@@ -23,21 +23,30 @@
 #include "coin.h"
 #include "parser_common.h"
 #include "parser_impl.h"
+#include "parser_txdef.h"
+#include "common/parser.h"
 #include "parser_encoding.h"
+#include "addr.h"
 
 #include "base64.h"
 #include "algo_asa.h"
 
 #include "crypto.h"
 
-
 parser_error_t parser_parse(parser_context_t *ctx,
                             const uint8_t *data,
                             size_t dataLen,
-                            parser_tx_t *tx_obj) {
-    CHECK_ERROR(parser_init(ctx, data, dataLen))
-    ctx->parser_tx_obj = tx_obj;
-    return _read(ctx, tx_obj);
+                            void *tx_obj,
+                            txn_content_e content) {
+    CHECK_ERROR(parser_init(ctx, data, dataLen, content))
+    if (content == MsgPack) {
+        ctx->parser_tx_obj = (parser_tx_t *) tx_obj;
+        return _read(ctx, (parser_tx_t *) tx_obj);
+    } else if (content == ArbitraryData) {
+        ctx->parser_arbitrary_data_obj = (parser_arbitrary_data_t *) tx_obj;
+        return _read_arbitrary_data(ctx, (parser_arbitrary_data_t *) tx_obj);
+    }
+    return parser_unexpected_error;
 }
 
 parser_error_t parser_validate(parser_context_t *ctx) {
@@ -57,7 +66,17 @@ parser_error_t parser_validate(parser_context_t *ctx) {
 
 parser_error_t parser_getNumItems(uint8_t *num_items) {
     *num_items = _getNumItems();
+
     if(*num_items == 0) {
+        return parser_unexpected_number_items;
+    }
+    return parser_ok;
+}
+
+parser_error_t parser_getNumJsonItems(uint8_t *num_json_items) {
+    *num_json_items = _getNumJsonItems();
+
+    if(*num_json_items == 0) {
         return parser_unexpected_number_items;
     }
     return parser_ok;
@@ -90,6 +109,16 @@ static parser_error_t checkSanity(uint8_t numItems, uint8_t displayIdx)
     if ( displayIdx >= numItems) {
         return parser_display_idx_out_of_range;
     }
+    return parser_ok;
+}
+
+static parser_error_t parser_printJsonItem(parser_context_t *ctx, uint8_t displayIdx, char *outKey, uint16_t outKeyLen, char *outVal, uint16_t outValLen, uint8_t pageIdx, uint8_t *pageCount) {
+    *pageCount = 1;
+    CHECK_ERROR(parser_jsonGetNthKey(ctx, displayIdx, outKey, outKeyLen));
+
+    char json_val[200];
+    CHECK_ERROR(parser_jsonGetNthValue(ctx, displayIdx, json_val, sizeof(json_val)));
+    pageString(outVal, outValLen, json_val, pageIdx, pageCount);
     return parser_ok;
 }
 
@@ -675,12 +704,11 @@ static parser_error_t parser_printTxApplication(parser_context_t *ctx,
     return parser_display_idx_out_of_range;
 }
 
-
-parser_error_t parser_getItem(parser_context_t *ctx,
-                              uint8_t displayIdx,
-                              char *outKey, uint16_t outKeyLen,
-                              char *outVal, uint16_t outValLen,
-                              uint8_t pageIdx, uint8_t *pageCount) {
+static parser_error_t parser_getItemMsgPack(parser_context_t *ctx,
+                                           uint8_t displayIdx,
+                                           char *outKey, uint16_t outKeyLen,
+                                           char *outVal, uint16_t outValLen,
+                                           uint8_t pageIdx, uint8_t *pageCount) {
     if (ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
         return parser_unexpected_value;
     }
@@ -753,6 +781,104 @@ parser_error_t parser_getItem(parser_context_t *ctx,
     }
 
     return parser_display_idx_out_of_range;
+}
+
+static parser_error_t parser_getItemArbitrary(parser_context_t *ctx,
+                                             uint8_t displayIdx,
+                                             char *outKey, uint16_t outKeyLen,
+                                             char *outVal, uint16_t outValLen,
+                                             uint8_t pageIdx, uint8_t *pageCount) {
+    if (ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
+        return parser_unexpected_value;
+    }
+
+    uint8_t num_json_items = 0;
+    CHECK_ERROR(parser_getNumJsonItems(&num_json_items))
+
+    cleanOutput(outKey, outKeyLen, outVal, outValLen);
+    *pageCount = 0;
+
+    if (displayIdx < num_json_items) {
+        // Data
+        *pageCount = 1;
+        CHECK_ERROR(parser_printJsonItem(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount));
+        return parser_ok;
+    }
+
+    if (displayIdx == num_json_items) {
+        // Signer
+        *pageCount = 1;
+
+        snprintf(outKey, outKeyLen, "Signer");
+
+        char addr[80] = {0};
+        if (encodePubKey((uint8_t*) addr, sizeof(addr), ctx->parser_arbitrary_data_obj->signerBuffer) == 0) {
+            return parser_unexpected_error;
+        }
+
+        pageString(outVal, outValLen, addr, pageIdx, pageCount);
+        return parser_ok;
+    }
+
+    if (displayIdx == num_json_items + 1) {
+        // Domain
+        *pageCount = 1;
+        snprintf(outKey, outKeyLen, "Domain");
+        pageString(outVal, outValLen, (const char*)ctx->parser_arbitrary_data_obj->domainBuffer, pageIdx, pageCount);
+        return parser_ok;
+    }
+
+    if (displayIdx == num_json_items + 2) {
+        // Auth Data
+        *pageCount = 1;
+        snprintf(outKey, outKeyLen, "Auth Data");
+        pageStringHex(outVal, outValLen, (const char*)ctx->parser_arbitrary_data_obj->authDataBuffer, ctx->parser_arbitrary_data_obj->authDataLen, pageIdx, pageCount);
+        return parser_ok;
+    }
+
+    if (ctx->parser_arbitrary_data_obj->requestIdLen != 0) {
+        if (displayIdx == num_json_items + 3) {
+            // Request ID
+            *pageCount = 1;
+            snprintf(outKey, outKeyLen, "Request ID");
+            char base64ReqId[200] = {0};
+            base64_encode(base64ReqId, sizeof(base64ReqId), ctx->parser_arbitrary_data_obj->requestIdBuffer, ctx->parser_arbitrary_data_obj->requestIdLen);
+            pageString(outVal, outValLen, base64ReqId, pageIdx, pageCount);
+            return parser_ok;
+        }
+    } else {
+        displayIdx++;
+    }
+
+    if (displayIdx == num_json_items + 4) {
+        // hdPath
+        *pageCount = 1;
+        zxerr_t err = addr_printHdPath(outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
+        if (err != zxerr_ok) {
+            return parser_unexpected_error;
+        }
+        return parser_ok;
+    }
+
+    return parser_display_idx_out_of_range;
+}
+
+parser_error_t parser_getItem(parser_context_t *ctx,
+                              uint8_t displayIdx,
+                              char *outKey, uint16_t outKeyLen,
+                              char *outVal, uint16_t outValLen,
+                              uint8_t pageIdx, uint8_t *pageCount) {
+    if (ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
+        return parser_unexpected_value;
+    }
+
+    if (ctx->content == MsgPack) {
+        return parser_getItemMsgPack(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
+    } else if (ctx->content == ArbitraryData) {
+        return parser_getItemArbitrary(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
+    }
+
+    return parser_unexpected_error;
 }
 
 parser_error_t parser_getTxnText(parser_context_t *ctx,
