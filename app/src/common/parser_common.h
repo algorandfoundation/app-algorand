@@ -95,6 +95,15 @@ typedef enum {
     parser_failed_domain_auth = 48,
     parser_failed_hd_path = 49,
     parser_invalid_request_id = 50,
+
+    // CBOR specific
+    parser_cbor_error_parser_init = 51,
+    parser_cbor_error_invalid_type = 52,
+    parser_cbor_error_map_entry = 53,
+    parser_cbor_error_unexpected = 54,
+    parser_cbor_error_out_of_memory = 55,
+    parser_cbor_error_container = 56,
+    parser_cbor_error_invalid_parameters = 57,
 } parser_error_t;
 
 typedef struct {
