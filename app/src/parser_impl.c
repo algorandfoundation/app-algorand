@@ -25,6 +25,7 @@
 #include "zxformat.h"
 #include "zxerror.h"
 #include "jsmn.h"
+#include "base64.h"
 
 #if defined(LEDGER_SPECIFIC)
 #include "crypto.h"
@@ -1443,17 +1444,19 @@ static parser_error_t _readRequestId(parser_context_t *c, parser_arbitrary_data_
     uint16_t requestIdLen = 0;
     CHECK_ERROR(_readUInt16(c, &requestIdLen))
 
+    if (requestIdLen > REQUEST_ID_MAX_LEN) {
+        return parser_invalid_request_id;
+    }
+
     v->requestIdLen = requestIdLen;
 
     // RequestId is optional
     if (requestIdLen != 0) {
         v->requestIdBuffer = c->buffer + c->offset;
-        // Check it's an uppercase hex string
-        for (uint32_t i = 0; i < requestIdLen; i++) {
-            if ((v->requestIdBuffer[i] < '0' || v->requestIdBuffer[i] > '9') &&
-                (v->requestIdBuffer[i] < 'A' || v->requestIdBuffer[i] > 'F')) {
-                return parser_invalid_request_id;
-            }
+        char base64ReqId[BASE64_REQUEST_ID_MAX_LEN] = {0};
+        // Check it can be encoded as base64
+        if (base64_encode(base64ReqId, (uint16_t)sizeof(base64ReqId), v->requestIdBuffer, v->requestIdLen) == 0) {
+            return parser_invalid_request_id;
         }
         CTX_CHECK_AND_ADVANCE(c, requestIdLen)
         num_items++;

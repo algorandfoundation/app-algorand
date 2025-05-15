@@ -38,6 +38,10 @@ beforeAll(() => {
   // This is handled by the vitest.config.ts file
 })
 
+// Tests need to be deterministic or the generated snapshots will change
+const deterministicSeed = 'fixed-seed-for-deterministic-tests';
+const requestIdRandomBytes = crypto.createHash('sha256').update(deterministicSeed).digest().slice(0, 32);
+
 describe('Arbitrary Sign', () => {
   describe.each(ARBITRARY_SIGN_TEST_CASES)('Tx Arbitrary Sign', (params) => {
     test.each(models)('arbitrary sign', async (m) => {
@@ -55,7 +59,7 @@ describe('Arbitrary Sign', () => {
           data: Buffer.from(params.data).toString('base64'),
           signer: pubKey,
           domain: "arc60.io",
-          requestId: Buffer.from(Array(32).fill(0x41)).toString('base64'),
+          requestId: Buffer.from(requestIdRandomBytes).toString('base64'),
           authenticationData: authData,
           hdPath: "m/44'/283'/0'/0/0"
         }
@@ -97,7 +101,7 @@ describe('Arbitrary Sign', () => {
         data: Buffer.from(canonify({ type: "arc60.create", challenge: "eSZVsYmvNCjJGH5a9WWIjKp5jm5DFxlwBBAw9zc8FZM=", origin: "https://arc60.io" }) || '').toString('base64'),
         signer: firstPubKey,
         domain: "arc60.io",
-        requestId: Buffer.from(Array(32).fill(0x41)).toString('base64'),
+        requestId: Buffer.from(requestIdRandomBytes).toString('base64'),
         authenticationData: authData,
         hdPath: `m/44'/283'/${accountId}'/0/0`
       }
@@ -140,7 +144,7 @@ describe('Arbitrary Sign', () => {
         data: Buffer.from(canonify({ type: "arc60.create", challenge: "eSZVsYmvNCjJGH5a9WWIjKp5jm5DFxlwBBAw9zc8FZM=", origin: "https://arc60.io" }) || '').toString('base64'),
         signer: pubKey,
         domain: "arc60.io",
-        requestId: Buffer.from(Array(32).fill(0x41)).toString('base64'),
+        requestId: Buffer.from(requestIdRandomBytes).toString('base64'),
         authenticationData: authData,
       }
 
@@ -158,6 +162,72 @@ describe('Arbitrary Sign', () => {
       // Now verify the signature
       const valid = ed25519.verify(signatureResponse.signature, toSign, pubKey)
       expect(valid).toBe(true)
+    } finally {
+      await sim.close()
+    }
+  })
+
+  test.each(models)('arbitrary sign - long requestId', async (m) => {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const app = new AlgorandApp(sim.getTransport())
+
+      const responseAddr = await app.getAddressAndPubKey()
+      const pubKey = responseAddr.publicKey
+
+      const authData: Uint8Array = new Uint8Array(crypto.createHash('sha256').update("arc60.io").digest())
+      const longRequestIdBytes = Buffer.from(Array(255).fill(0x00))
+
+      const authRequest: StdSigData = {
+        data: Buffer.from(canonify({ type: "arc60.create", challenge: "eSZVsYmvNCjJGH5a9WWIjKp5jm5DFxlwBBAw9zc8FZM=", origin: "https://arc60.io" }) || '').toString('base64'),
+        signer: pubKey,
+        domain: "arc60.io",
+        requestId: Buffer.from(longRequestIdBytes).toString('base64'),
+        authenticationData: authData,
+      }
+
+      // do not wait here.. we need to navigate
+      const signatureRequest = app.signData(authRequest, { scope: ScopeType.AUTH, encoding: 'base64' })
+
+      // Wait until we are not in the main menu
+      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_arbitrary-long-requestId`)
+
+      const signatureResponse = await signatureRequest
+
+      const toSign = buildToSign(authRequest)
+
+      // Now verify the signature
+      const valid = ed25519.verify(signatureResponse.signature, toSign, pubKey)
+      expect(valid).toBe(true)
+    } finally {
+      await sim.close()
+    }
+  })
+
+  test.each(models)('arbitrary sign - invalid requestId', async (m) => {
+    const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const app = new AlgorandApp(sim.getTransport())
+
+      const responseAddr = await app.getAddressAndPubKey()
+      const pubKey = responseAddr.publicKey
+
+      const authData: Uint8Array = new Uint8Array(crypto.createHash('sha256').update("arc60.io").digest())
+      const invalidRequestIdBytes = Buffer.from(Array(400).fill(0x00))
+
+      const authRequest: StdSigData = {
+        data: Buffer.from(canonify({ type: "arc60.create", challenge: "eSZVsYmvNCjJGH5a9WWIjKp5jm5DFxlwBBAw9zc8FZM=", origin: "https://arc60.io" }) || '').toString('base64'),
+        signer: pubKey,
+        domain: "arc60.io",
+        requestId: Buffer.from(invalidRequestIdBytes).toString('base64'),
+        authenticationData: authData,
+      }
+
+      // do not wait here.. we need to navigate
+      await expect(app.signData(authRequest, { scope: ScopeType.AUTH, encoding: 'base64' })).rejects.toThrow('Invalid Request ID')
     } finally {
       await sim.close()
     }
@@ -534,7 +604,7 @@ describe('Arbitrary Sign', () => {
         data: Buffer.from(canonify({ type: "arc60.create", challenge: "eSZVsYmvNCjJGH5a9WWIjKp5jm5DFxlwBBAw9zc8FZM=", origin: "https://arc60.io" }) || '').toString('base64'),
         signer: pubKey,
         domain: "arc60.io",
-        requestId: Buffer.from(Array(32).fill(0x41)).toString('base64'),
+        requestId: Buffer.from(requestIdRandomBytes).toString('base64'),
         authenticationData: authData,
         hdPath: "m/44'/283'/0'/0/0"
       }
@@ -580,7 +650,7 @@ describe('Arbitrary Sign', () => {
         data: Buffer.from(canonify({ account_address: "BYVBFXCGJLDU5Q7POFA2G4CLAGUBWRU3TOKDPNQG57D44KW6CVY3FPIXRM", chain_id: "283", domain: "arc60.io", expiration_time: "2022-12-31T23:59:59Z", issued_at: "2021-12-31T23:59:59Z", nonce: "A4nEQYY3Ss9sCkTMwIIZui5VeUS5Y1HAQDK2+ivNtX8=", not_before: "2021-12-31T23:59:59Z", resources: ["auth", "sign"], statement: "We are requesting you to sign this message to authenticate to arc60.io", type: "ed25519", uri: "https://arc60.io", version: "1" }) || '').toString('base64'),
         signer: pubKey,
         domain: "arc60.io",
-        requestId: Buffer.from(Array(32).fill(0x41)).toString('base64'),
+        requestId: Buffer.from(requestIdRandomBytes).toString('base64'),
         authenticationData: authData,
         hdPath: "m/44'/283'/0'/0/0"
       }
