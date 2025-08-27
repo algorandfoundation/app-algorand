@@ -22,6 +22,7 @@
 #include "app_mode.h"
 #include "crypto.h"
 
+#if defined(LEDGER_SPECIFIC)
 zxerr_t addr_getNumItems(uint8_t *num_items) {
     zemu_log_stack("addr_getNumItems");
     *num_items = 1;
@@ -56,4 +57,22 @@ zxerr_t addr_getItem(int8_t displayIdx,
         default:
             return zxerr_no_data;
     }
+}
+#endif
+
+zxerr_t addr_printHdPath(
+                     char *outKey, uint16_t outKeyLen,
+                     char *outVal, uint16_t outValLen,
+                     uint8_t pageIdx, uint8_t *pageCount) {
+    snprintf(outKey, outKeyLen, "hdPath");
+
+    char buffer[50];
+    bip32_to_str(buffer, sizeof(buffer), hdPath, HDPATH_LEN_DEFAULT);
+
+    char path[50];
+    strncpy(path, "m/", strlen("m/") + 1);
+    strncat(path, buffer, sizeof(path) - strlen(path) - 1);
+
+    pageString(outVal, outValLen, path, pageIdx, pageCount);
+    return zxerr_ok;
 }

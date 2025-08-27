@@ -14,12 +14,127 @@
 *  limitations under the License.
 ********************************************************************************/
 
+#include "common/parser.h"
 #include "parser_impl.h"
+#include "parser_json.h"
+#include "parser_cbor.h"
 #include "msgpack.h"
+#include "coin.h"
+#include "crypto_utils.h"
+#include "apdu_codes.h"
+#include "zxformat.h"
+#include "zxerror.h"
+#include "jsmn.h"
+#include "base64.h"
+
+#if defined(LEDGER_SPECIFIC)
+#include "crypto.h"
+#endif
+
+typedef enum {
+    UNASSIGNED_MINUS_65536 = -65536,
+    RS1 = -65535,
+    A128CTR = -65534,
+    A192CTR = -65533,
+    A256CTR = -65532,
+    A128CBC = -65531,
+    A192CBC = -65530,
+    A256CBC = -65529,
+    KT256 = -264,
+    KT128 = -263,
+    TURBOSHAKE256 = -262,
+    TURBOSHAKE128 = -261,
+    WALNUTDSA = -260,
+    RS512 = -259,
+    RS384 = -258,
+    RS256 = -257,
+    ML_DSA_87 = -50,
+    ML_DSA_65 = -49,
+    ML_DSA_44 = -48,
+    ES256K = -47,
+    HSS_LMS = -46,
+    SHAKE256 = -45,
+    SHA_512 = -44,
+    SHA_384 = -43,
+    RSAES_OAEP_W_SHA_512 = -42,
+    RSAES_OAEP_W_SHA_256 = -41,
+    RSAES_OAEP_W_RFC_8017_DEFAULT_PARAMETERS = -40,
+    PS512 = -39,
+    PS384 = -38,
+    PS256 = -37,
+    ES512 = -36,
+    ES384 = -35,
+    ECDH_SS_A256KW = -34,
+    ECDH_SS_A192KW = -33,
+    ECDH_SS_A128KW = -32,
+    ECDH_ES_A256KW = -31,
+    ECDH_ES_A192KW = -30,
+    ECDH_ES_A128KW = -29,
+    ECDH_SS_HKDF_512 = -28,
+    ECDH_SS_HKDF_256 = -27,
+    ECDH_ES_HKDF_512 = -26,
+    ECDH_ES_HKDF_256 = -25,
+    SHAKE128 = -18,
+    SHA_512_256 = -17,
+    SHA_256 = -16,
+    SHA_256_64 = -15,
+    SHA_1 = -14,
+    DIRECT_HKDF_AES_256 = -13,
+    DIRECT_HKDF_AES_128 = -12,
+    DIRECT_HKDF_SHA_512 = -11,
+    DIRECT_HKDF_SHA_256 = -10,
+    EDDSA = -8,
+    ES256 = -7,
+    DIRECT = -6,
+    A256KW = -5,
+    A192KW = -4,
+    A128KW = -3,
+    RESERVED = 0,
+    A128GCM = 1,
+    A192GCM = 2,
+    A256GCM = 3,
+    HMAC_256_64 = 4,
+    HMAC_256_256 = 5,
+    HMAC_384_384 = 6,
+    HMAC_512_512 = 7,
+    AES_CCM_16_64_128 = 10,
+    AES_CCM_16_64_256 = 11,
+    AES_CCM_64_64_128 = 12,
+    AES_CCM_64_64_256 = 13,
+    AES_MAC_128_64 = 14,
+    AES_MAC_256_64 = 15,
+    CHACHA20_POLY1305 = 24,
+    AES_MAC_128_128 = 25,
+    AES_MAC_256_128 = 26,
+    AES_CCM_16_128_128 = 30,
+    AES_CCM_16_128_256 = 31,
+    AES_CCM_64_128_128 = 32,
+    AES_CCM_64_128_256 = 33,
+    IV_GENERATION = 34
+} CoseAlgorithm_e;
 
 static uint8_t num_items;
 static uint8_t common_num_items;
 static uint8_t tx_num_items;
+static uint8_t num_json_items;
+
+static credential_public_key_t credential_public_key;
+
+#define KEY_VALUE_CRV -1
+#define KEY_VALUE_KTY 1
+#define KEY_VALUE_ALG 3
+#define KEY_VALUE_KEY_OPS 4
+#define INT_VAULE_SIGN 1
+#define INT_VAULE_VERIFY 2
+
+// crv Types
+#define CRV_P256 1
+#define CRV_P384 2
+#define CRV_P521 3
+#define CRV_X25519 4
+#define CRV_X448 5
+#define CRV_ED25519 6
+#define CRV_ED448 7
 
 #define MAX_PARAM_SIZE 12
 #define MAX_ITEM_ARRAY 50
@@ -34,15 +149,31 @@ DEC_READFIX_UNSIGNED(64);
 static parser_error_t addItem(uint8_t displayIdx);
 static parser_error_t _findKey(parser_context_t *c, const char *key);
 
+static parser_error_t _readSigner(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readScope(parser_context_t *c);
+static parser_error_t _readEncoding(parser_context_t *c);
+static parser_error_t _readData(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readDomain(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readAuthData(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t _readRequestId(parser_context_t *c, parser_arbitrary_data_t *v);
+static parser_error_t checkCredentialPublicKeyItem(cbor_value_t *key, cbor_value_t *value);
+static parser_error_t checkExtensionsItem(cbor_value_t *key, cbor_value_t *value);
+
+#define SCOPE_AUTH 0x01
+#define ENCODING_BASE64 0x01
+
+#define AAGUID_LEN 16
+
 #define DISPLAY_ITEM(type, len, counter)        \
     for(uint8_t j = 0; j < len; j++) {          \
         CHECK_ERROR(addItem(type))              \
         counter++;                              \
     }
 
-parser_error_t parser_init_context(parser_context_t *ctx,
+static parser_error_t parser_init_context(parser_context_t *ctx,
                                    const uint8_t *buffer,
-                                   uint16_t bufferSize) {
+                                   uint16_t bufferSize,
+                                   txn_content_e content) {
     if (ctx == NULL || bufferSize == 0 || buffer == NULL) {
          return parser_init_context_empty;
     }
@@ -56,11 +187,12 @@ parser_error_t parser_init_context(parser_context_t *ctx,
 
     ctx->buffer = buffer;
     ctx->bufferLen = bufferSize;
+    ctx->content = content;
     return parser_ok;
 }
 
-parser_error_t parser_init(parser_context_t *ctx, const uint8_t *buffer, uint16_t bufferSize) {
-    CHECK_ERROR(parser_init_context(ctx, buffer, bufferSize))
+parser_error_t parser_init(parser_context_t *ctx, const uint8_t *buffer, uint16_t bufferSize, txn_content_e content) {
+    CHECK_ERROR(parser_init_context(ctx, buffer, bufferSize, content))
     return parser_ok;
 }
 
@@ -1174,6 +1306,459 @@ parser_error_t _read(parser_context_t *c, parser_tx_t *v)
     return parser_ok;
 }
 
+#if !defined(LEDGER_SPECIFIC)
+#include "crypto.h"
+static parser_error_t _readSerializedHdPath(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint32_t serializedPathLen = sizeof(uint32_t) * HDPATH_LEN_DEFAULT;
+    memcpy(hdPath, c->buffer, serializedPathLen);
+
+    const bool mainnet = hdPath[0] == HDPATH_0_DEFAULT && hdPath[1] == HDPATH_1_DEFAULT;
+
+    if (!mainnet) {
+        return parser_failed_hd_path;
+    }
+    CTX_CHECK_AND_ADVANCE(c, serializedPathLen)
+    return parser_ok;
+}
+#endif
+
+parser_error_t _read_arbitrary_data(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    #if !defined(LEDGER_SPECIFIC)
+    // For cpp_test, the path needs to be read here
+    CHECK_ERROR(_readSerializedHdPath(c, v))
+    #endif
+    num_items++; // hdPath, read on process_chunk
+    CHECK_ERROR(_readSigner(c, v))
+    CHECK_ERROR(_readScope(c))
+    CHECK_ERROR(_readEncoding(c))
+    CHECK_ERROR(_readData(c, v))
+    CHECK_ERROR(_readDomain(c, v))
+    CHECK_ERROR(_readRequestId(c, v))
+    CHECK_ERROR(_readAuthData(c, v))
+    return parser_ok;
+}
+
+static parser_error_t _readSigner(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    v->signerBuffer = c->buffer + c->offset;
+
+    
+    uint8_t raw_pubkey[PK_LEN_25519];
+    #if defined(LEDGER_SPECIFIC)
+    zxerr_t err = crypto_extractPublicKey(raw_pubkey, PK_LEN_25519);
+    if (err != zxerr_ok) {
+        return parser_invalid_signer;
+    }
+    #else
+    // in cpp_test we cannot compute the pubkey from the hdPath
+    const char *pubkeyAcc0 = "1eccfd1ec05e4125fae690cec2a77839a9a36235dd6e2eafba79ca25c0da60f8";
+    const char *pubkeyAcc123 = "0dfdbcdb8eebed628cfb4ef70207b86fd0deddca78e90e8c59d6f441e383b377";
+
+    if (hdPath[2] == (HDPATH_2_DEFAULT | 0x00000000)) {
+        hexstr_to_array(raw_pubkey, PK_LEN_25519, pubkeyAcc0, strlen(pubkeyAcc0));
+    } else {
+        hexstr_to_array(raw_pubkey, PK_LEN_25519, pubkeyAcc123, strlen(pubkeyAcc123));
+    }
+    #endif
+
+    if (memcmp(raw_pubkey, v->signerBuffer, PK_LEN_25519) != 0) {
+        return parser_invalid_signer;
+    }
+
+    CTX_CHECK_AND_ADVANCE(c, PK_LEN_25519)
+
+    num_items++;
+
+    return parser_ok;
+}
+
+static parser_error_t _readScope(parser_context_t *c)
+{
+    uint8_t scope = 0;
+    CHECK_ERROR(_readUInt8(c, &scope))
+    
+    if (scope != SCOPE_AUTH) {
+        return parser_invalid_scope;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readEncoding(parser_context_t *c)
+{
+    uint8_t encoding = 0;
+    CHECK_ERROR(_readUInt8(c, &encoding))
+    
+    if (encoding != ENCODING_BASE64) {
+        return parser_invalid_encoding;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readData(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    size_t dataLen = 0;
+    CHECK_ERROR(_readUInt16(c, (uint16_t*)&dataLen))
+    v->dataLen = dataLen;
+    v->dataBuffer = c->buffer + c->offset;
+
+    CHECK_ERROR(parser_json_parse((const char*)c->buffer + c->offset, dataLen, c, &num_json_items))
+    num_items += num_json_items;
+
+    CHECK_ERROR(parser_json_check_canonical((const char*)v->dataBuffer, v->dataLen))
+
+    return parser_ok;
+}
+
+static parser_error_t _readDomain(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint16_t domainLen = 0;
+    CHECK_ERROR(_readUInt16(c, &domainLen))
+    v->domainLen = domainLen;
+
+    if (domainLen == 0) {
+        return parser_missing_domain;
+    }
+
+    v->domainBuffer = c->buffer + c->offset;
+
+    for (uint32_t i = 0; i < domainLen; i++) {
+        // Check for representable ASCII (32-126)
+        if (v->domainBuffer[i] < 32 || v->domainBuffer[i] > 126) {
+            return parser_invalid_domain;
+        }
+    }
+
+    CTX_CHECK_AND_ADVANCE(c, domainLen)
+
+    num_items++;
+
+    return parser_ok;
+}
+
+static parser_error_t _readRequestId(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    uint16_t requestIdLen = 0;
+    CHECK_ERROR(_readUInt16(c, &requestIdLen))
+
+    if (requestIdLen > REQUEST_ID_MAX_LEN) {
+        return parser_invalid_request_id;
+    }
+
+    v->requestIdLen = requestIdLen;
+
+    // RequestId is optional
+    if (requestIdLen != 0) {
+        v->requestIdBuffer = c->buffer + c->offset;
+        char base64ReqId[BASE64_REQUEST_ID_MAX_LEN] = {0};
+        // Check it can be encoded as base64
+        if (base64_encode(base64ReqId, (uint16_t)sizeof(base64ReqId), v->requestIdBuffer, v->requestIdLen) == 0) {
+            return parser_invalid_request_id;
+        }
+        CTX_CHECK_AND_ADVANCE(c, requestIdLen)
+        num_items++;
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t _readAuthData(parser_context_t *c, parser_arbitrary_data_t *v)
+{
+    size_t authDataLen = 0;
+    CHECK_ERROR(_readUInt16(c, (uint16_t*)&authDataLen))
+    uint32_t startOffset = c->offset;
+    v->authDataLen = (uint16_t)authDataLen;
+
+    if (authDataLen == 0) {
+        return parser_missing_authenticated_data;
+    }
+
+    v->authDataBuffer = c->buffer + c->offset;
+
+    // authData first 32 bytes should be the sha256 of the domain
+    uint8_t domainHash[SHA256_DIGEST_SIZE];
+    crypto_sha256(v->domainBuffer, v->domainLen, domainHash, SHA256_DIGEST_SIZE);
+
+    if (memcmp(domainHash, v->authDataBuffer, SHA256_DIGEST_SIZE) != 0) {
+        return parser_failed_domain_auth;
+    }
+
+    CTX_CHECK_AND_ADVANCE(c, SHA256_DIGEST_SIZE)
+
+    if (authDataLen == SHA256_DIGEST_SIZE) {
+        num_items++;
+        return parser_ok;
+    }
+
+    // Keep reading, there's more data besides the domain hash
+
+    // read flags
+    flags_t flags;
+    MEMZERO(&flags, sizeof(flags_t));
+    CHECK_ERROR(_readUInt8(c, (uint8_t*)&flags))
+
+    // read signCount
+    uint32_t signCount;
+    CHECK_ERROR(_readUInt32(c, &signCount))
+
+    cbor_parser_t parser;
+    cbor_value_t value;
+
+    if (flags.at) {
+        // read AAGUID
+        uint8_t aaguid[AAGUID_LEN];
+        CHECK_ERROR(_readBytes(c, aaguid, AAGUID_LEN))
+
+        // read credentialIdLength
+        uint16_t credentialIdLen;
+        CHECK_ERROR(_readUInt16(c, &credentialIdLen))
+
+        // read credentialId
+        uint8_t credentialId[400];
+        CHECK_ERROR(_readBytes(c, credentialId, credentialIdLen))
+
+        parser_init_cbor(&parser, &value, c->buffer + c->offset, authDataLen);
+
+        // read credentialPublicKey
+        MEMZERO(&credential_public_key, sizeof(credential_public_key_t));
+        CHECK_ERROR(parser_traverse_map_entries(&value, checkCredentialPublicKeyItem))
+
+        if (!credential_public_key.found_alg) {
+            return parser_failed_domain_auth;
+        }
+        
+        const uint8_t *next_byte = cbor_value_get_next_byte(&value);
+        size_t bytesConsumed = 0;
+
+        if (next_byte < (c->buffer + c->offset)) {
+            return parser_failed_domain_auth;
+        }
+
+        bytesConsumed = next_byte - (c->buffer + c->offset);
+            
+        // Advance the parser as many bytes as were consumed by the CBOR parser
+        CTX_CHECK_AND_ADVANCE(c, bytesConsumed)
+    }
+
+    if (flags.ed) {
+        parser_init_cbor(&parser, &value, c->buffer + c->offset, authDataLen);
+        // read extensions
+        CHECK_ERROR(parser_traverse_map_entries(&value, checkExtensionsItem))
+
+        const uint8_t *next_byte = cbor_value_get_next_byte(&value);
+        size_t bytesConsumed = 0;
+        
+        if (next_byte < (c->buffer + c->offset)) {
+            return parser_failed_domain_auth;
+        }
+
+        bytesConsumed = next_byte - (c->buffer + c->offset);
+            
+        // Advance the parser as many bytes as were consumed by the CBOR parser
+        CTX_CHECK_AND_ADVANCE(c, bytesConsumed)
+    }
+
+    if (startOffset + authDataLen != c->offset) {
+        return parser_failed_domain_auth;
+    }
+
+    num_items++;
+
+    return parser_ok;
+}
+
+static parser_error_t checkCredentialPublicKeyItem(cbor_value_t *key, cbor_value_t *value) {
+    if (cbor_value_is_integer(key)) {
+        int keyValue = 0;
+        CHECK_ERROR(cbor_value_get_int(key, &keyValue))
+        
+        if (keyValue == KEY_VALUE_CRV) {
+            int valueValue = 0;
+            if (cbor_value_is_text_string(value) || cbor_value_is_byte_string(value)) {
+                // Valid value, but it won't be used
+                credential_public_key.found_crv = true;
+                return parser_ok;
+            }
+            if (cbor_value_is_integer(value)) {
+                CHECK_ERROR(cbor_value_get_int(value, &valueValue))
+                credential_public_key.crv = valueValue;
+                credential_public_key.found_crv = true;
+            } else {
+                return parser_failed_domain_auth;
+            }
+        }
+
+        // Key is "kty"
+        else if (keyValue == KEY_VALUE_KTY) {
+            int valueValue = 0;
+            if (cbor_value_is_integer(value)) {
+                CHECK_ERROR(cbor_value_get_int(value, &valueValue))
+            } else {
+                return parser_failed_domain_auth;
+            }
+
+            credential_public_key.kty = valueValue;
+        }
+
+        // Check if key is "alg" (COSE key 3), which is mandatory for FIDO2
+        else if (keyValue == KEY_VALUE_ALG) {
+            int valueValue = 0;
+            if (cbor_value_is_integer(value)) {
+                CHECK_ERROR(cbor_value_get_int(value, &valueValue))
+            }
+            // Check if the algorithm value is a valid CoseAlgorithm_e
+            switch (valueValue) {
+                case UNASSIGNED_MINUS_65536:
+                case RS1:
+                case A128CTR:
+                case A192CTR:
+                case A256CTR:
+                case A128CBC:
+                case A192CBC:
+                case A256CBC:
+                case KT256:
+                case KT128:
+                case TURBOSHAKE256:
+                case TURBOSHAKE128:
+                case WALNUTDSA:
+                case RS512:
+                case RS384:
+                case RS256:
+                case ML_DSA_87:
+                case ML_DSA_65:
+                case ML_DSA_44:
+                case ES256K:
+                case HSS_LMS:
+                case SHAKE256:
+                case SHA_512:
+                case SHA_384:
+                case RSAES_OAEP_W_SHA_512:
+                case RSAES_OAEP_W_SHA_256:
+                case RSAES_OAEP_W_RFC_8017_DEFAULT_PARAMETERS:
+                case PS512:
+                case PS384:
+                case PS256:
+                case ECDH_SS_A256KW:
+                case ECDH_SS_A192KW:
+                case ECDH_SS_A128KW:
+                case ECDH_ES_A256KW:
+                case ECDH_ES_A192KW:
+                case ECDH_ES_A128KW:
+                case ECDH_SS_HKDF_512:
+                case ECDH_SS_HKDF_256:
+                case ECDH_ES_HKDF_512:
+                case ECDH_ES_HKDF_256:
+                case SHAKE128:
+                case SHA_512_256:
+                case SHA_256:
+                case SHA_256_64:
+                case SHA_1:
+                case DIRECT_HKDF_AES_256:
+                case DIRECT_HKDF_AES_128:
+                case DIRECT_HKDF_SHA_512:
+                case DIRECT_HKDF_SHA_256:
+                case DIRECT:
+                case A256KW:
+                case A192KW:
+                case A128KW:
+                case A128GCM:
+                case A192GCM:
+                case A256GCM:
+                case HMAC_256_64:
+                case HMAC_256_256:
+                case HMAC_384_384:
+                case HMAC_512_512:
+                case AES_CCM_16_64_128:
+                case AES_CCM_16_64_256:
+                case AES_CCM_64_64_128:
+                case AES_CCM_64_64_256:
+                case AES_MAC_128_64:
+                case AES_MAC_256_64:
+                case CHACHA20_POLY1305:
+                case AES_MAC_128_128:
+                case AES_MAC_256_128:
+                case AES_CCM_16_128_128:
+                case AES_CCM_16_128_256:
+                case AES_CCM_64_128_128:
+                case AES_CCM_64_128_256:
+                case IV_GENERATION:
+                    credential_public_key.found_alg = true;
+                    credential_public_key.alg = valueValue;
+                    break;
+                case ES256:
+                case ES384:
+                case ES512:
+                    // Value of "kty" must be "2" (EC2)
+                    // RFC8152 - Section 8.1 : https://datatracker.ietf.org/doc/html/rfc8152#section-8.1
+                    if (credential_public_key.kty != 2) {
+                        return parser_failed_domain_auth;
+                    }
+                    credential_public_key.found_alg = true;
+                    credential_public_key.alg = valueValue;
+                    break;
+                case EDDSA:
+                    // Value of "kty" must be "1" (OKP)
+                    // RFC8152 - Section 8.2 : https://datatracker.ietf.org/doc/html/rfc8152#section-8.2
+                    if (credential_public_key.kty != 1) {
+                        return parser_failed_domain_auth;
+                    }
+                    // Value of "crv" must be a valid curve (Table 22 )
+                    // RFC8152 - Section 8.2 : https://datatracker.ietf.org/doc/html/rfc8152#section-8.2
+                    if (!credential_public_key.found_crv) {
+                        return parser_failed_domain_auth;
+                    }
+                    if (credential_public_key.crv != CRV_ED25519 && credential_public_key.crv != CRV_ED448) {
+                        return parser_failed_domain_auth;
+                    }
+                    credential_public_key.found_alg = true;
+                    credential_public_key.alg = valueValue;
+                break;
+                default:
+                    return parser_failed_domain_auth;
+            }
+        }
+    
+        // Key is "key_ops"
+        else if (keyValue == KEY_VALUE_KEY_OPS) {
+            // Value is an array and must contain "sign" and "verify" when using ECDSA
+            // RFC8152 - Section 8.1 : https://datatracker.ietf.org/doc/html/rfc8152#section-8.1
+            if (credential_public_key.alg == ES256 || credential_public_key.alg == ES384 || credential_public_key.alg == ES512 || credential_public_key.alg == EDDSA) {
+                int values[30];
+                size_t count = 0;
+                bool found_sign = false;
+                bool found_verify = false;
+
+                CHECK_ERROR(read_int_array(value, values, &count))
+
+                // "key_ops" values explained in https://datatracker.ietf.org/doc/html/rfc8152#section-7.1 Table 4
+                for (size_t i = 0; i < count; i++) {
+                    if (values[i] == INT_VAULE_SIGN) {
+                        found_sign = true;
+                    } else if (values[i] == INT_VAULE_VERIFY) {
+                        found_verify = true;
+                    }
+                }
+
+                if (!found_sign || !found_verify) {
+                    return parser_failed_domain_auth;
+                }
+            }
+        }
+    }
+
+    return parser_ok;
+}
+
+static parser_error_t checkExtensionsItem(cbor_value_t *key, __Z_UNUSED cbor_value_t *value) {
+    if (key->type != CborTextStringType) {
+        return parser_failed_domain_auth;
+    }
+    return parser_ok;
+}
+
 uint8_t _getNumItems()
 {
     return num_items;
@@ -1187,6 +1772,34 @@ uint8_t _getCommonNumItems()
 uint8_t _getTxNumItems()
 {
     return tx_num_items;
+}
+
+uint8_t _getNumJsonItems()
+{
+    return num_json_items;
+}
+
+uint16_t parser_mapParserErrorToSW(parser_error_t err) {
+    switch (err) {
+        case parser_invalid_scope:
+            return APDU_CODE_INVALID_SCOPE;
+        case parser_failed_decoding:
+            return APDU_CODE_FAILED_DECODING;
+        case parser_invalid_signer:
+            return APDU_CODE_INVALID_SIGNER;
+        case parser_missing_domain:
+            return APDU_CODE_MISSING_DOMAIN;
+        case parser_missing_authenticated_data:
+            return APDU_CODE_MISSING_AUTHENTICATED_DATA;
+        case parser_bad_json:
+            return APDU_CODE_BAD_JSON;
+        case parser_failed_domain_auth:
+            return APDU_CODE_FAILED_DOMAIN_AUTH;
+        case parser_failed_hd_path:
+            return APDU_CODE_FAILED_HD_PATH;
+        default:
+            return APDU_CODE_DATA_INVALID;
+    }
 }
 
 const char *parser_getErrorDescription(parser_error_t err) {
@@ -1272,6 +1885,34 @@ const char *parser_getErrorDescription(parser_error_t err) {
             return "msgpack_array_too_big";
         case parser_msgpack_array_type_expected:
             return "Msgpack array type expected";
+        case parser_invalid_scope:
+            return "Invalid Scope";
+        case parser_failed_decoding:
+            return "Failed decoding";
+        case parser_invalid_signer:
+            return "Invalid Signer";
+        case parser_missing_domain:
+            return "Missing Domain";
+        case parser_invalid_domain:
+            return "Invalid Domain";
+        case parser_missing_authenticated_data:
+            return "Missing Authentication Data";
+        case parser_bad_json:
+            return "Bad JSON";
+        case parser_failed_domain_auth:
+            return "Failed Domain Auth";
+        case parser_failed_hd_path:
+            return "Failed HD Path";
+        case parser_invalid_request_id:
+            return "Invalid Request ID";
+        case parser_cbor_error_parser_init:
+            return "CBOR parser init error";
+        case parser_cbor_error_invalid_type:
+            return "CBOR invalid type";
+        case parser_cbor_error_map_entry:
+            return "CBOR map entry error";
+        case parser_cbor_error_unexpected:
+            return "CBOR unexpected error";
         default:
             return "Unrecognized error code";
     }
@@ -1313,4 +1954,40 @@ const char *parser_getMsgPackTypeDescription(uint8_t type) {
         default:
             return "Unrecognized type";
     }
+}
+
+parser_error_t parser_jsonGetNthKey(parser_context_t *ctx, uint8_t displayIdx, char *outKey, uint16_t outKeyLen) {
+    uint16_t token_index = 0;
+    CHECK_ERROR(parser_json_object_get_nth_key(0, displayIdx, &token_index));
+    CHECK_ERROR(parser_getJsonItemFromTokenIndex((const char*)ctx->parser_arbitrary_data_obj->dataBuffer, token_index, outKey, outKeyLen));
+    return parser_ok;
+}
+
+parser_error_t parser_jsonGetNthValue(parser_context_t *ctx, uint8_t displayIdx, char *outVal, uint16_t outValLen) {
+    uint16_t token_index = 0;
+    CHECK_ERROR(parser_json_object_get_nth_value(0, displayIdx, &token_index));
+    CHECK_ERROR(parser_getJsonItemFromTokenIndex((const char*)ctx->parser_arbitrary_data_obj->dataBuffer, token_index, outVal, outValLen));
+
+    // Remove backslashes from JSON string values
+    // This is needed because we don't want to display backslashes in the UI
+    uint16_t writePos = 0;
+    uint16_t readPos = 0;
+    uint16_t currentLen = strlen(outVal);
+    
+    while (readPos < currentLen) {
+        if (outVal[readPos] == '\\') {
+            // Skip the backslash
+            readPos++;
+        } else {
+            // Copy character if not a backslash
+            outVal[writePos] = outVal[readPos];
+            writePos++;
+            readPos++;
+        }
+    }
+    
+    // Add null terminator at the new end of string
+    outVal[writePos] = '\0';
+
+    return parser_ok;
 }
