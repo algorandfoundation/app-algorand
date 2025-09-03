@@ -16,8 +16,9 @@
 
 import Zemu, { DEFAULT_START_OPTIONS } from '@zondax/zemu'
 // @ts-ignore
-import AlgorandApp from '@zondax/ledger-algorand'
+import { AlgorandApp } from '@zondax/ledger-algorand'
 import { APP_SEED, models, txApplicationLong } from './common'
+import { expect, test, describe, beforeEach } from 'vitest'
 
 // @ts-ignore
 import ed25519 from 'ed25519-supercop'
@@ -31,7 +32,10 @@ const defaultOptions = {
 
 const accountId = 123
 
-jest.setTimeout(300000)
+// Timeout is now handled in vitest.config.ts
+beforeEach(() => {
+  // This is handled by the vitest.config.ts file
+})
 
 describe('BigTransactions', function () {
   test.concurrent.each(models)('can start and stop container', async function (m) {
@@ -43,27 +47,25 @@ describe('BigTransactions', function () {
     }
   })
 
-  test.concurrent.each(models)('sign application big', async function (m) {
-    const sim = new Zemu(m.path)
-    try {
-      await sim.start({ ...defaultOptions, model: m.name })
-      const app = new AlgorandApp(sim.getTransport())
+    test.concurrent.each(models)('sign application big', async function (m) {
+      const sim = new Zemu(m.path)
+      try {
+        await sim.start({ ...defaultOptions, model: m.name })
+        const app = new AlgorandApp(sim.getTransport())
 
-      const txBlob = Buffer.from(txApplicationLong, 'hex')
+        const txBlob = Buffer.from(txApplicationLong, 'hex')
 
-      console.log(sim.getMainMenuSnapshot())
-      const responseAddr = await app.getAddressAndPubKey(accountId)
-      const pubKey = responseAddr.publicKey
+        const responseAddr = await app.getAddressAndPubKey(accountId)
+        const pubKey = responseAddr.publicKey
 
-      // do not wait here.. we need to navigate
-      const signatureRequest = app.sign(accountId, txBlob)
+        // do not wait here.. we need to navigate
+        const signatureRequest = app.sign(accountId, txBlob)
 
-      // Wait until we are not in the main menu
-      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
-      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_application_big`)
+        // Wait until we are not in the main menu
+        await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
+        await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_application_big`)
 
       const signatureResponse = await signatureRequest
-      console.log(signatureResponse)
 
       expect(signatureResponse.return_code).toEqual(0x9000)
       expect(signatureResponse.error_message).toEqual('No errors')

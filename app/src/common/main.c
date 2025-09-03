@@ -24,6 +24,7 @@ main(void) {
     // exit critical section
     __asm volatile("cpsie i");
 
+
     view_init();
     os_boot();
 
@@ -35,7 +36,9 @@ main(void) {
             app_main();
         }
         CATCH_OTHER(e)
-        {}
+        {
+            UNUSED(e);
+        }
         FINALLY
         {}
     }

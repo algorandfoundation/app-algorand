@@ -31,64 +31,88 @@ extern "C" {
 typedef enum {
     // Generic errors
     parser_ok = 0,
-    parser_no_data,
-    parser_init_context_empty,
-    parser_display_idx_out_of_range,
-    parser_display_page_out_of_range,
-    parser_unexpected_error,
+    parser_no_data = 1,
+    parser_init_context_empty = 2,
+    parser_display_idx_out_of_range = 3,
+    parser_display_page_out_of_range = 4,
+    parser_unexpected_error = 5,
+
     // Coin generic
-    parser_unexpected_type,
-    parser_unexpected_method,
-    parser_unexpected_buffer_end,
-    parser_unexpected_value,
-    parser_unexpected_number_items,
-    parser_unexpected_version,
-    parser_unexpected_characters,
-    parser_unexpected_field,
-    parser_duplicated_field,
-    parser_value_out_of_range,
-    parser_invalid_address,
-    parser_unexpected_chain,
-    parser_missing_field,
-    parser_query_no_results,
-    parser_program_fields_too_long,
-    parser_too_many_extra_pages,
-    parser_buffer_too_small,
+    parser_unexpected_type = 6,
+    parser_unexpected_method = 7,
+    parser_unexpected_buffer_end = 8,
+    parser_unexpected_value = 9,
+    parser_unexpected_number_items = 10,
+    parser_unexpected_version = 11,
+    parser_unexpected_characters = 12,
+    parser_unexpected_field = 13,
+    parser_duplicated_field = 14,
+    parser_value_out_of_range = 15,
+    parser_invalid_address = 16,
+    parser_unexpected_chain = 17,
+    parser_missing_field = 18,
+    parser_query_no_results = 19,
+    parser_program_fields_too_long = 20,
+    parser_too_many_extra_pages = 21,
+    parser_buffer_too_small = 22,
 
-    parser_unknown_transaction,
+    parser_unknown_transaction = 23,
 
-    parser_key_not_found,
+    parser_key_not_found = 24,
 
     //Msgpack specific
-    parser_msgpack_unexpected_type,
-    parser_msgpack_unexpected_key,
+    parser_msgpack_unexpected_type = 25,
+    parser_msgpack_unexpected_key = 26,
 
-    parser_msgpack_map_type_expected,
-    parser_msgpack_map_type_not_supported,
+    parser_msgpack_map_type_expected = 27,
+    parser_msgpack_map_type_not_supported = 28,
 
-    parser_msgpack_str_type_expected,
-    parser_msgpack_str_type_not_supported,
-    parser_msgpack_str_too_big,
+    parser_msgpack_str_type_expected = 29,
+    parser_msgpack_str_type_not_supported = 30,
+    parser_msgpack_str_too_big = 31,
 
-    parser_msgpack_bin_type_expected,
-    parser_msgpack_bin_type_not_supported,
-    parser_msgpack_bin_unexpected_size,
+    parser_msgpack_bin_type_expected = 32,
+    parser_msgpack_bin_type_not_supported = 33,
+    parser_msgpack_bin_unexpected_size = 34,
 
-    parser_msgpack_int_type_expected,
+    parser_msgpack_int_type_expected = 35,
 
-    parser_msgpack_bool_type_expected,
+    parser_msgpack_bool_type_expected = 36,
 
-    parser_msgpack_array_unexpected_size,
-    parser_msgpack_array_too_big,
-    parser_msgpack_array_type_expected,
+    parser_msgpack_array_unexpected_size = 37,
+    parser_msgpack_array_too_big = 38,
+    parser_msgpack_array_type_expected = 39,
 
+    // Arbitrary sign specific
+    parser_invalid_scope = 40,
+    parser_invalid_encoding = 41,
+    parser_failed_decoding = 42,
+    parser_invalid_signer = 43,
+    parser_missing_domain = 44,
+    parser_invalid_domain = 45,
+    parser_missing_authenticated_data = 46,
+    parser_bad_json = 47,
+    parser_failed_domain_auth = 48,
+    parser_failed_hd_path = 49,
+    parser_invalid_request_id = 50,
+
+    // CBOR specific
+    parser_cbor_error_parser_init = 51,
+    parser_cbor_error_invalid_type = 52,
+    parser_cbor_error_map_entry = 53,
+    parser_cbor_error_unexpected = 54,
+    parser_cbor_error_out_of_memory = 55,
+    parser_cbor_error_container = 56,
+    parser_cbor_error_invalid_parameters = 57,
 } parser_error_t;
 
 typedef struct {
     const uint8_t *buffer;
     uint16_t bufferLen;
     uint16_t offset;
+    txn_content_e content;
     parser_tx_t *parser_tx_obj;
+    parser_arbitrary_data_t *parser_arbitrary_data_obj;
 } parser_context_t;
 
 #ifdef __cplusplus

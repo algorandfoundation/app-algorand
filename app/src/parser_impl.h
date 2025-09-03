@@ -19,6 +19,7 @@
 #include <zxmacros.h>
 #include "zxtypes.h"
 #include "parser_txdef.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,14 +54,16 @@ parser_error_t _readBytes(parser_context_t *c, uint8_t *buff, uint16_t bufLen);
 
 parser_error_t parser_init(parser_context_t *ctx,
                            const uint8_t *buffer,
-                           uint16_t bufferSize);
+                           uint16_t bufferSize,
+                           txn_content_e content);
 
 uint8_t _getNumItems();
 uint8_t _getCommonNumItems();
 uint8_t _getTxNumItems();
+uint8_t _getNumJsonItems();
 
 parser_error_t _read(parser_context_t *c, parser_tx_t *v);
-
+parser_error_t _read_arbitrary_data(parser_context_t *c, parser_arbitrary_data_t *v);
 parser_error_t _readMapSize(parser_context_t *c, uint16_t *mapItems);
 parser_error_t _readArraySize(parser_context_t *c, uint8_t *mapItems);
 parser_error_t _readString(parser_context_t *c, uint8_t *buff, uint16_t buffLen);
@@ -75,6 +78,24 @@ DEF_READFIX_UNSIGNED(8);
 DEF_READFIX_UNSIGNED(16);
 DEF_READFIX_UNSIGNED(32);
 DEF_READFIX_UNSIGNED(64);
+
+typedef struct {
+    uint8_t kty;
+    int alg;
+    uint8_t crv;
+    bool found_alg;
+    bool found_crv;
+} credential_public_key_t;
+
+typedef struct flags {
+    uint8_t up: 1;     // Bit 0 User Presence
+    uint8_t pad1: 2;   // Bits 1-2 (padding)
+    uint8_t uv: 1;     // Bit 3 User Verified
+    uint8_t pad2: 2;   // Bits 4-5 (padding)
+    uint8_t at: 1;     // Bit 6 Attestation
+    uint8_t ed: 1;     // Bit 7 Extensions
+} flags_t;
+
 
 
 #ifdef __cplusplus
