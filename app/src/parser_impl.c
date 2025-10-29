@@ -1860,9 +1860,9 @@ const char *parser_getErrorDescription(parser_error_t err) {
         case parser_msgpack_unexpected_key:
             return "Msgpack unexpected key";
         case parser_msgpack_map_type_expected:
-            return "Msgpack map tye expected";
+            return "Msgpack map type expected";
         case parser_msgpack_map_type_not_supported:
-            return "Msgpack map type not suported";
+            return "Msgpack map type not supported";
         case parser_msgpack_str_type_expected:
             return "Msgpack str type expected";
         case parser_msgpack_str_type_not_supported:
