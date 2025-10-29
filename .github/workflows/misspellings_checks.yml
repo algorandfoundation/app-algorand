@@ -26,4 +26,5 @@ jobs:
         with:
           builtin: clear,rare
           check_filenames: true
-          skip: "*.json"
+          skip: "./tests/testcases/*.json,./deps"
+          ignore_words_list: "optin,asnd"
