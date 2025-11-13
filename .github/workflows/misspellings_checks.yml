@@ -17,3 +17,8 @@ jobs:
   misspell:
     name: Check misspellings
     uses: LedgerHQ/ledger-app-workflows/.github/workflows/reusable_spell_check.yml@v1
+    with:
+      check_filenames: true
+      ignore_words_list: "optin,asnd"
+      # Check everything but deps/ and tests/testcases/*.json
+      src_path: ".github/,app/src/,cli/,docs/,fuzz/,js/src/,tests/*.cpp,tests/utils/,Makefile,README.md,CMakeLists.txt,ledger_app.toml"
